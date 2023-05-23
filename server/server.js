@@ -61,7 +61,7 @@ app.get("/api/v1/hatmart", async (req, res, next) => {
     let hatsQuery = Hat.find();
   
     if (color) {
-      hatsQuery = hatsQuery.where("colour", color);
+      hatsQuery = hatsQuery.where("colour", { $regex: new RegExp(color, 'i') });
     }
     if (shopname) {
       hatsQuery = Hat.aggregate([
@@ -77,7 +77,7 @@ app.get("/api/v1/hatmart", async (req, res, next) => {
           $unwind : "$shop"
         },
         {
-          $match: { "shop.name" : shopname }
+          $match: { "shop.name": { $regex: new RegExp(shopname, 'i') } },
         }
       ]);
     }
@@ -160,8 +160,6 @@ app.post("/api/v1/signup", async (req, res, next) => {
 app.post("/api/v1/login", async (req, res, next) => {
   try {
     const { email, password } = req.body;
-    console.log("Email:", email);
-    console.log("Password:", password);
     if (!email || !password) {
       return res.status(400).json({
         message: "Please provide email and password",
@@ -174,8 +172,6 @@ app.post("/api/v1/login", async (req, res, next) => {
       });
     }
     const validPassword = await bcrypt.compare(password, user.password);
-    console.log("Valid Password:", validPassword);
-    console.log("User Password:", user.password);
     if (!validPassword) {
       return res.status(400).json({
         message: "Invalid username or password",
@@ -207,10 +203,11 @@ app.delete("/api/v1/logout", (req, res) => {
   });
 });
 
-app.post("/api/v1/shops", async (req, res, next) => {
+app.post("/api/v1/shops", verifyToken, async (req, res, next) => {
   try {
     const { name, address, slogan, email } = req.body;
-    const user = await User.findOne({ email });
+    const userId = req.user._id;
+    const user = await User.findById(userId);
     if (!user) {
       return res.status(400).json({
         message: "Please login",
@@ -256,13 +253,14 @@ app.put("/api/v1/shops/:shopId", verifyToken, async (req, res, next) => {
   const shopId = new mongoose.Types.ObjectId(req.params.shopId);
   const { name, address, slogan } = req.body;
   try {
-    const shop = await Shop.findById(shopId);
+    const shop = await Shop.findById(shopId).populate("owner", "email");
+    console.log(shop);
     if (!shop) {
       return res.status(400).json({
         message: "Shop not found",
       });
     }
-    if (shop.email !== req.user.email) {
+    if (shop.owner.email !== req.user.email) {
       return res.status(401).json({
         message: "Unauthorized",
       });
@@ -288,13 +286,13 @@ app.delete("/api/v1/shops/:shopId", verifyToken, async (req, res, next) => {
   const shopId = new mongoose.Types.ObjectId(req.params.shopId);
   const hats = await Hat.find({ shop: shopId });
   try{
-    const shop = await Shop.findById(shopId);
+    const shop = await Shop.findById(shopId).populate("owner", "email");
     if (!shop) {
       return res.status(404).json({
         message: "Shop not found",
       });
     }
-    if (shop.email !== req.user.email) {
+    if (shop.owner.email !== req.user.email) {
           return res.status(401).json({
             message: "Unauthorized",
           });
@@ -318,12 +316,11 @@ app.delete("/api/v1/shops/:shopId", verifyToken, async (req, res, next) => {
 app.post("/api/v1/hats", verifyToken, async (req, res, next) => {
   try {
     const { name, colour, shopId, price } = req.body;
-    console.log(req.user);
-    const shop = await Shop.findById(shopId);
+    const shop = await Shop.findById(shopId).populate("owner", "email");
     if (!shop) {
       return res.status(404).json({ message: "Shop not found" });
     }
-    if (shop.email !== req.user.email) {
+    if (shop.owner.email !== req.user.email) {
       return res.status(401).json({
         message: "Unauthorized",
       });
@@ -354,13 +351,40 @@ app.get("/api/v1/hats", verifyToken, async (req, res, next) => {
   try {
     const userId = req.user._id;
     const user = await User.findById(userId);
-    let hats = await Hat.find({ owner: userId }).populate('shop', 'name');
+    let allhats = await Hat.find({ owner: userId }).populate('shop', 'name');
+    let hatsQuery = Hat.find({owner: userId});
     if (color){
-      hats = hats.filter(hat => hat.colour === color);
+      hatsQuery = hatsQuery.where("colour", { $regex: new RegExp(color, 'i') });
     }
-    res.status(200).json({
-      hats,
-    });
+    if (shopname) {
+      hatsQuery = Hat.aggregate([
+        {
+          $lookup: {
+            from: "shops",
+            localField: "shop",
+            foreignField: "_id",
+            as: "shop"
+           }
+        },
+        {
+          $unwind : "$shop"
+        },
+        {
+          $match: { "shop.name": { $regex: new RegExp(shopname, 'i') } },
+        }
+      ]);
+    }
+    
+    const hats = await hatsQuery.exec();
+    if (hats.length === 0) {
+      return res.status(404).json({
+        allhats,
+      });
+    }
+    else{
+      const populatedHats = await Hat.populate(hats, {path: "shop"});
+      res.status(200).json({ hats: populatedHats });
+    }
   } catch (error) {
     res.status(500).json({
       message: error.message,
